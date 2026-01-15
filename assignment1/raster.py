@@ -3,42 +3,37 @@ import numpy as np
 from utils import *
 from shapes import Shape, SVG, Triangle, Line, Circle
 
-EPSILON = 1e-15
-
-
 # NOTE feel free to write your own helper functions as long as they're in raster.py
+
+K = 3
+
 
 # returns two functions, one that converts from viewbox to image coordinates and
 #   one that convert from image to viewbox coordinates
-def create_coords_converters(svg: SVG, im: Tuple[float, float]):
+def im_svg_change_of_basis(svg: SVG, im: Tuple[float, float]):
     im_dim = np.array(im)
     svg_dim = np.array((svg.w, svg.h))
     s = im_dim / svg_dim
 
-    # return two functions, convert between viewbox and image coordinates
-    def vb_to_im(p: np.ndarray):
-        assert isinstance(p, np.ndarray)
-        return p * s
-
-    def im_to_vb(p: np.ndarray):
-        assert isinstance(p, np.ndarray)
-        return p / s
-
-    return vb_to_im, im_to_vb
-
-def clamp(x: float, range: list[float]) -> float:
-    return max(range[0], min(range[1], x))
+    return s, 1 / s
 
 
-def in_triangle(pt: np.ndarray, tri: np.ndarray):
-    s = []
+def in_triangle(P: np.ndarray, tri: np.ndarray, eps=1e-12):
+    assert isinstance(P, np.ndarray)
+    assert isinstance(tri, np.ndarray)
 
-    for i in range(3):
-        a = tri[i]
-        b = tri[(i + 1) % 3]
-        s.append(np.cross(b - a, pt - a))
+    A, B, C = tri
 
-    return all(x >= -EPSILON for x in s) or all(x <= EPSILON for x in s)
+    def edge(U, V, X):
+        return (V[0] - U[0]) * (X[..., 1] - U[1]) - (V[1] - U[1]) * (X[..., 0] - U[0])
+
+    e0 = edge(A, B, P)
+    e1 = edge(B, C, P)
+    e2 = edge(C, A, P)
+
+    return ((e0 >= -eps) & (e1 >= -eps) & (e2 >= -eps)) | (
+        (e0 <= eps) & (e1 <= eps) & (e2 <= eps)
+    )
 
 
 def rasterize(
@@ -68,12 +63,51 @@ def rasterize(
     # the first shape in shapes is always the SVG object with the viewbox sizes
 
     # TODO: put your code here
-    vb_to_im, im_to_vb = create_coords_converters(svg, (im_w, im_h))
+    vb_to_im, im_to_vb = im_svg_change_of_basis(svg, (im_w, im_h))
 
-    queue = shapes[1:]
-    while len(queue) > 0:
-        shape = queue.pop(0)
+    def triangle_inside_mask(tri_im, bounds):
+        x_start, x_end, y_start, y_end = bounds
 
+        X, Y = np.meshgrid(np.arange(x_start, x_end), np.arange(y_start, y_end))
+        offs = np.linspace(0.0, 1.0, K, endpoint=True)
+
+        U = X[..., None, None] + offs[None, None, None, :]
+        T = Y[..., None, None] + offs[None, None, :, None]
+
+        U, T = np.broadcast_arrays(U, T)
+        P = np.stack([U, T], axis=-1)
+        return in_triangle(P, tri_im)
+
+    def compute_triangle_coverage(
+        tri_im: np.ndarray, tri_vb: np.ndarray, bounds: list[float]
+    ) -> np.ndarray | None:
+        x_start, x_end, y_start, y_end = bounds
+
+        if x_end <= x_start or y_end <= y_start:
+            return None
+
+        X, Y = np.meshgrid(np.arange(x_start, x_end), np.arange(y_start, y_end))
+
+        if not antialias:
+            P_im = np.stack([X + 0.5, Y + 0.5], axis=-1)
+            P_vb = P_im * im_to_vb
+
+            inside = in_triangle(P_vb, tri_vb)
+            return inside.astype(np.float64)
+        else:
+            offs = np.linspace(0.0, 1.0, K, endpoint=True)
+
+            U = X[..., None, None] + offs[None, None, None, :]
+            T = Y[..., None, None] + offs[None, None, :, None]
+
+            U, T = np.broadcast_arrays(U, T)
+            P_im = np.stack([U, T], axis=-1)
+            P_vb = P_im * im_to_vb
+
+            inside = in_triangle(P_vb, tri_vb)
+            return inside.mean(axis=(-1, -2))
+
+    for shape in shapes[1:]:
         if shape.type == "line":
             assert isinstance(shape, Line)
 
@@ -89,88 +123,111 @@ def rasterize(
             N = np.array([-d[1], d[0]])
             N *= shape.width / 2
 
-            queue.insert(
-                0, Triangle(np.array([a - N, a + N, b + N, a - N]), shape.color)
+            tris_vb = np.array(
+                [
+                    np.array([a - N, a + N, b + N]),
+                    np.array([b + N, b - N, a - N]),
+                ]
             )
-            queue.insert(
-                0, Triangle(np.array([b + N, b - N, a - N, b + N]), shape.color)
-            )
+            tris_im = tris_vb * vb_to_im
+
+            # handle no antialiasing case
+
+            pts = tris_im.reshape(-1, 2)
+
+            x_start = int(np.clip(np.floor(pts[:, 0].min()), 0, im_w - 1))
+            x_end = int(np.clip(np.ceil(pts[:, 0].max()), 0, im_w))
+            y_start = int(np.clip(np.floor(pts[:, 1].min()), 0, im_h - 1))
+            y_end = int(np.clip(np.ceil(pts[:, 1].max()), 0, im_h))
+
+            inside_union = None
+            for tri_im, tri_vb in zip(tris_im, tris_vb):
+                inside_i = triangle_inside_mask(
+                    tri_im, [x_start, x_end, y_start, y_end]
+                )
+                inside_union = (
+                    inside_i if inside_union is None else (inside_union | inside_i)
+                )
+
+            if inside_union is None:
+                continue
+
+            a = inside_union.mean(axis=(-1, -2))
+
+            box = img[y_start:y_end, x_start:x_end, :]
+            img[y_start:y_end, x_start:x_end, :] = (1.0 - a)[..., None] * box + a[
+                ..., None
+            ] * shape.color[None, None, :]
 
         elif shape.type == "triangle":
             assert isinstance(shape, Triangle)
             assert np.array_equal(shape.pts[0], shape.pts[-1])
 
             tri_vb = shape.pts[:-1]
-            tri_im = np.array([vb_to_im(v) for v in tri_vb])
+            tri_im = tri_vb * vb_to_im
 
-            BB_START = (
-                int(clamp(np.floor(min(tri_im[:, 0])), [0, im_w - 1])),
-                int(clamp(np.floor(min(tri_im[:, 1])), [0, im_h - 1])),
+            x_start = int(np.clip(np.floor(tri_im[:, 0].min()), 0, im_w - 1))
+            x_end = int(np.clip(np.ceil(tri_im[:, 0].max()), 0, im_w))
+            y_start = int(np.clip(np.floor(tri_im[:, 1].min()), 0, im_h - 1))
+            y_end = int(np.clip(np.ceil(tri_im[:, 1].max()), 0, im_h))
+
+            a = compute_triangle_coverage(
+                tri_im, tri_vb, [x_start, x_end, y_start, y_end]
             )
-            BB_END = (
-                int(clamp(np.ceil(max(tri_im[:, 0])), [0, im_w - 1])),
-                int(clamp(np.ceil(max(tri_im[:, 1])), [0, im_h - 1])),
-            )
 
-            for j in range(BB_START[1], BB_END[1]):
-                for i in range(BB_START[0], BB_END[0]):
-                    # not antialiasing case
-                    if not antialias and in_triangle(
-                        im_to_vb(np.array([i + 0.5, j + 0.5])), tri_vb
-                    ):
-                        img[j, i, :] = shape.color
-                        continue
+            if a is None:
+                continue
 
-                    # antialiasing case
-                    a = 0
-                    K = 3
-                    for t in np.linspace(j, j + 1, K):
-                        for u in np.linspace(i, i + 1, K):
-                            if in_triangle(im_to_vb(np.array([u, t])), tri_vb):
-                                a += 1
-
-                    a /= K ** 2
-                    img[j, i] = (1 - a) * img[j, i] + a * shape.color
+            box = img[y_start:y_end, x_start:x_end, :]
+            img[y_start:y_end, x_start:x_end, :] = (1.0 - a)[..., None] * box + a[
+                ..., None
+            ] * shape.color[None, None, :]
 
         elif shape.type == "circle":
             assert isinstance(shape, Circle)
 
             r_vb = shape.radius
-            r_im = vb_to_im(
-                np.array([shape.radius, shape.radius])
-            )  # two radii because image could be non-square
+            # two radii because image could be non-square
+            r_im = np.array([shape.radius, shape.radius]) * vb_to_im
             c_vb = shape.center
-            c_im = vb_to_im(c_vb)
+            c_im = c_vb * vb_to_im
 
-            BB_START = (
-                int(clamp(np.floor(c_im[0] - r_im[0]), [0, im_w - 1])),
-                int(clamp(np.floor(c_im[1] - r_im[1]), [0, im_h - 1])),
-            )
-            BB_END = (
-                int(clamp(np.ceil(c_im[0] + r_im[0]), [0, im_w - 1])),
-                int(clamp(np.ceil(c_im[1] + r_im[1]), [0, im_h - 1])),
-            )
+            x_start = int(np.clip(np.floor(c_im[0] - r_im[0]), 0, im_w - 1))
+            x_end = int(np.clip(np.ceil(c_im[0] + r_im[0]), 0, im_w))
+            y_start = int(np.clip(np.floor(c_im[1] - r_im[1]), 0, im_h - 1))
+            y_end = int(np.clip(np.ceil(c_im[1] + r_im[1]), 0, im_h))
 
-            for j in range(BB_START[1], BB_END[1]):
-                for i in range(BB_START[0], BB_END[0]):
-                    if not antialias:
-                        x, y = im_to_vb(np.array([i + 0.5, j + 0.5]))
-                        if (x - c_vb[0]) ** 2 + (y - c_vb[1]) ** 2 > r_vb**2:
-                            continue
+            if x_end <= x_start or y_end <= y_start:
+                continue  # need reason
 
-                        img[j, i] = shape.color
-                        continue
+            X, Y = np.meshgrid(np.arange(x_start, x_end), np.arange(y_start, y_end))
 
-                    a = 0
-                    K = 3
-                    for t in np.linspace(j, j + 1, K):
-                        for u in np.linspace(i, i + 1, K):
-                            x, y = im_to_vb(np.array([u, t]))
-                            if (x - c_vb[0]) ** 2 + (y - c_vb[1]) ** 2 <= r_vb**2:
-                              a += 1
+            if not antialias:
+                P_im = np.stack([X + 0.5, Y + 0.5], axis=-1)
+                P_vb = P_im * im_to_vb
+                dx = P_vb[..., 0] - c_vb[0]
+                dy = P_vb[..., 1] - c_vb[1]
+                inside = dx * dx + dy * dy <= r_vb * r_vb
+                a = inside.astype(np.float64)
+            else:
+                offs = np.linspace(0.0, 1.0, K, endpoint=True)
+                U = X[..., None, None] + offs[None, None, None, :]
+                T = Y[..., None, None] + offs[None, None, :, None]
 
-                    a /= K ** 2
-                    img[j, i] = (1 - a) * img[j, i] + a * shape.color
+                U, T = np.broadcast_arrays(U, T)
+
+                P_im = np.stack([U, T], axis=-1)
+                P_vb = P_im * im_to_vb
+
+                dx = P_vb[..., 0] - c_vb[0]
+                dy = P_vb[..., 1] - c_vb[1]
+                inside = dx * dx + dy * dy <= r_vb * r_vb
+                a = inside.mean(axis=(-1, -2))
+
+            box = img[y_start:y_end, x_start:x_end, :]
+            img[y_start:y_end, x_start:x_end, :] = (1.0 - a)[..., None] * box + a[
+                ..., None
+            ] * shape.color[None, None, :]
 
     if output_file:
         save_image(output_file, img)
