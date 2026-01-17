@@ -5,7 +5,8 @@ from shapes import Shape, SVG, Triangle, Line, Circle
 
 # NOTE feel free to write your own helper functions as long as they're in raster.py
 
-K = 3
+K = 3  # antialiasing uses K^2 subsamples
+BB_TOLERANCE = 1
 
 
 # returns two functions, one that converts from viewbox to image coordinates and
@@ -34,6 +35,20 @@ def in_triangle(P: np.ndarray, tri: np.ndarray, eps=1e-12):
     return ((e0 >= -eps) & (e1 >= -eps) & (e2 >= -eps)) | (
         (e0 <= eps) & (e1 <= eps) & (e2 <= eps)
     )
+
+
+def floorclip(val: float, min: int, max: int):
+    """
+    Floors the value and then clips it
+    """
+    return int(np.clip(np.floor(val), min, max))
+
+
+def ceilclip(val: float, min: int, max: int):
+    """
+    Ceils the value and then clips it
+    """
+    return int(np.clip(np.ceil(val), min, max))
 
 
 def rasterize(
@@ -65,47 +80,32 @@ def rasterize(
     # TODO: put your code here
     vb_to_im, im_to_vb = im_svg_change_of_basis(svg, (im_w, im_h))
 
-    def triangle_inside_mask(tri_im, bounds):
+    def triangle_inside_mask(
+        tri_vb: np.ndarray, bounds: list[float], antialias=False
+    ) -> np.ndarray:
         x_start, x_end, y_start, y_end = bounds
 
         X, Y = np.meshgrid(np.arange(x_start, x_end), np.arange(y_start, y_end))
+
+        if not antialias:
+            P_vb = np.stack([X + 0.5, Y + 0.5], axis=-1) * im_to_vb
+            inside = in_triangle(P_vb, tri_vb)
+            return inside[..., None, None]
+
         offs = np.linspace(0.0, 1.0, K, endpoint=True)
 
         U = X[..., None, None] + offs[None, None, None, :]
         T = Y[..., None, None] + offs[None, None, :, None]
 
         U, T = np.broadcast_arrays(U, T)
-        P = np.stack([U, T], axis=-1)
-        return in_triangle(P, tri_im)
+        P_vb = np.stack([U, T], axis=-1) * im_to_vb
+        return in_triangle(P_vb, tri_vb)
 
-    def compute_triangle_coverage(
-        tri_im: np.ndarray, tri_vb: np.ndarray, bounds: list[float]
-    ) -> np.ndarray | None:
-        x_start, x_end, y_start, y_end = bounds
-
-        if x_end <= x_start or y_end <= y_start:
-            return None
-
-        X, Y = np.meshgrid(np.arange(x_start, x_end), np.arange(y_start, y_end))
-
-        if not antialias:
-            P_im = np.stack([X + 0.5, Y + 0.5], axis=-1)
-            P_vb = P_im * im_to_vb
-
-            inside = in_triangle(P_vb, tri_vb)
-            return inside.astype(np.float64)
-        else:
-            offs = np.linspace(0.0, 1.0, K, endpoint=True)
-
-            U = X[..., None, None] + offs[None, None, None, :]
-            T = Y[..., None, None] + offs[None, None, :, None]
-
-            U, T = np.broadcast_arrays(U, T)
-            P_im = np.stack([U, T], axis=-1)
-            P_vb = P_im * im_to_vb
-
-            inside = in_triangle(P_vb, tri_vb)
-            return inside.mean(axis=(-1, -2))
+    def fill_im(coverage, color):
+        box = img[y_start:y_end, x_start:x_end, :]
+        img[y_start:y_end, x_start:x_end, :] = (1.0 - coverage)[
+            ..., None
+        ] * box + coverage[..., None] * color[None, None, :]
 
     for shape in shapes[1:]:
         if shape.type == "line":
@@ -117,11 +117,11 @@ def rasterize(
             norm = np.linalg.norm(d)
 
             if norm == 0:
-                raise Exception("degenerate line")
-
-            d /= norm
-            N = np.array([-d[1], d[0]])
-            N *= shape.width / 2
+                continue  # don't render degenerate line
+            else:
+                d /= norm
+                N = np.array([-d[1], d[0]])
+                N *= shape.width / 2
 
             tris_vb = np.array(
                 [
@@ -131,19 +131,23 @@ def rasterize(
             )
             tris_im = tris_vb * vb_to_im
 
-            # handle no antialiasing case
-
             pts = tris_im.reshape(-1, 2)
 
-            x_start = int(np.clip(np.floor(pts[:, 0].min()), 0, im_w - 1))
-            x_end = int(np.clip(np.ceil(pts[:, 0].max()), 0, im_w))
-            y_start = int(np.clip(np.floor(pts[:, 1].min()), 0, im_h - 1))
-            y_end = int(np.clip(np.ceil(pts[:, 1].max()), 0, im_h))
+            x_start = floorclip(pts[:, 0].min(), 0, im_w - 1)
+            x_end = ceilclip(pts[:, 0].max(), 0, im_w)
+            y_start = floorclip(pts[:, 1].min(), 0, im_h - 1)
+            y_end = ceilclip(pts[:, 1].max(), 0, im_h)
+
+            # skip if zero area or clipped outside of image
+            if x_end <= x_start or y_end <= y_start:
+                continue
 
             inside_union = None
-            for tri_im, tri_vb in zip(tris_im, tris_vb):
+            for tri_vb in tris_vb:
                 inside_i = triangle_inside_mask(
-                    tri_im, [x_start, x_end, y_start, y_end]
+                    tri_vb,
+                    [x_start, x_end, y_start, y_end],
+                    antialias,
                 )
                 inside_union = (
                     inside_i if inside_union is None else (inside_union | inside_i)
@@ -152,12 +156,7 @@ def rasterize(
             if inside_union is None:
                 continue
 
-            a = inside_union.mean(axis=(-1, -2))
-
-            box = img[y_start:y_end, x_start:x_end, :]
-            img[y_start:y_end, x_start:x_end, :] = (1.0 - a)[..., None] * box + a[
-                ..., None
-            ] * shape.color[None, None, :]
+            fill_im(inside_union.mean(axis=(-1, -2)), shape.color)
 
         elif shape.type == "triangle":
             assert isinstance(shape, Triangle)
@@ -166,22 +165,23 @@ def rasterize(
             tri_vb = shape.pts[:-1]
             tri_im = tri_vb * vb_to_im
 
-            x_start = int(np.clip(np.floor(tri_im[:, 0].min()), 0, im_w - 1))
-            x_end = int(np.clip(np.ceil(tri_im[:, 0].max()), 0, im_w))
-            y_start = int(np.clip(np.floor(tri_im[:, 1].min()), 0, im_h - 1))
-            y_end = int(np.clip(np.ceil(tri_im[:, 1].max()), 0, im_h))
+            x_start = floorclip(tri_im[:, 0].min(), 0, im_w - 1)
+            x_end = ceilclip(tri_im[:, 0].max(), 0, im_w)
+            y_start = floorclip(tri_im[:, 1].min(), 0, im_h - 1)
+            y_end = ceilclip(tri_im[:, 1].max(), 0, im_h)
 
-            a = compute_triangle_coverage(
-                tri_im, tri_vb, [x_start, x_end, y_start, y_end]
-            )
-
-            if a is None:
+            # skip if zero area or clipped outside of image
+            if x_end <= x_start or y_end <= y_start:
                 continue
 
-            box = img[y_start:y_end, x_start:x_end, :]
-            img[y_start:y_end, x_start:x_end, :] = (1.0 - a)[..., None] * box + a[
-                ..., None
-            ] * shape.color[None, None, :]
+            fill_im(
+                triangle_inside_mask(
+                    tri_vb,
+                    [x_start, x_end, y_start, y_end],
+                    antialias,
+                ).mean(axis=(-1, -2)),
+                shape.color,
+            )
 
         elif shape.type == "circle":
             assert isinstance(shape, Circle)
@@ -192,13 +192,14 @@ def rasterize(
             c_vb = shape.center
             c_im = c_vb * vb_to_im
 
-            x_start = int(np.clip(np.floor(c_im[0] - r_im[0]), 0, im_w - 1))
-            x_end = int(np.clip(np.ceil(c_im[0] + r_im[0]), 0, im_w))
-            y_start = int(np.clip(np.floor(c_im[1] - r_im[1]), 0, im_h - 1))
-            y_end = int(np.clip(np.ceil(c_im[1] + r_im[1]), 0, im_h))
+            x_start = floorclip(c_im[0] - r_im[0], 0, im_w - 1)
+            x_end = ceilclip(c_im[0] + r_im[0], 0, im_w)
+            y_start = floorclip(c_im[1] - r_im[1], 0, im_h - 1)
+            y_end = ceilclip(c_im[1] + r_im[1], 0, im_h)
 
+            # skip if zero area or clipped outside of image
             if x_end <= x_start or y_end <= y_start:
-                continue  # need reason
+                continue
 
             X, Y = np.meshgrid(np.arange(x_start, x_end), np.arange(y_start, y_end))
 
@@ -224,10 +225,7 @@ def rasterize(
                 inside = dx * dx + dy * dy <= r_vb * r_vb
                 a = inside.mean(axis=(-1, -2))
 
-            box = img[y_start:y_end, x_start:x_end, :]
-            img[y_start:y_end, x_start:x_end, :] = (1.0 - a)[..., None] * box + a[
-                ..., None
-            ] * shape.color[None, None, :]
+            fill_im(a, shape.color)
 
     if output_file:
         save_image(output_file, img)
@@ -237,5 +235,5 @@ def rasterize(
 
 if __name__ == "__main__":
     rasterize(
-        "tests/test6.svg", 128, 128, output_file="your_output.png", antialias=False
+        "tests/test1.svg", 128, 128, output_file="your_output.png", antialias=False
     )
