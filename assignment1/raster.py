@@ -125,8 +125,8 @@ def rasterize(
 
             tris_vb = np.array(
                 [
-                    np.array([a - N, a + N, b + N]),
-                    np.array([b + N, b - N, a - N]),
+                    np.array([a + N, a - N, b - N]),
+                    np.array([b - N, b + N, a + N]),
                 ]
             )
             tris_im = tris_vb * vb_to_im
