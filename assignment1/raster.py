@@ -235,5 +235,5 @@ def rasterize(
 
 if __name__ == "__main__":
     rasterize(
-        "tests/test1.svg", 128, 128, output_file="your_output.png", antialias=False
+        "smile.svg", 512, 512, output_file="smile.png", antialias=True
     )
