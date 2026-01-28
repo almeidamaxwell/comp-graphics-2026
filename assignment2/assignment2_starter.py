@@ -58,7 +58,16 @@ def make_viewport_matrix(im_h: int, im_w: int) -> np.ndarray:
     You're free to modify this function's signature; this is merely a suggested
     way to factor out a common subtask.
     """
-    pass
+    n_x = float(im_w)
+    n_y = float(im_h)
+    return np.array(
+        [
+            [n_x / 2.0, 0.0, 0.0, n_x / 2.0],
+            [0.0, -n_y / 2.0, 0.0, n_y / 2.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
 
 
 def make_orthographic_matrix(
@@ -76,23 +85,60 @@ def make_orthographic_matrix(
     (These default argument values are the orthographic view volume parameters
     for P2 and P3.)
     """
-    pass
+    return np.array(
+        [
+            [2.0 / (r - l), 0.0, 0.0, -(r + l) / (r - l)],
+            [0.0, 2.0 / (t - b), 0.0, -(t + b) / (t - b)],
+            [0.0, 0.0, 2.0 / (n - f), -(n + f) / (n - f)],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
 
 
-def make_camera_matrix(eye: np.ndarray, lookat: np.ndarray, up: np.ndarray) -> np.ndarray:
+def make_camera_matrix(
+    eye: np.ndarray, lookat: np.ndarray, up: np.ndarray
+) -> np.ndarray:
     """
     You're free to modify this function's signature; this is merely a suggested
     way to factor out a common subtask.
     """
-    pass
+    w = eye - lookat
+    w /= np.linalg.norm(w)
+
+    u = np.cross(up, w)
+    u /= np.linalg.norm(u)
+
+    v = np.cross(w, u)
+
+    return np.array(
+        [
+            [*u, -np.dot(u, eye)],
+            [*v, -np.dot(v, eye)],
+            [*w, -np.dot(w, eye)],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
 
 
-def make_perspective_matrix(fovy: float, aspect: float, n: float, f: float) -> np.ndarray:
+def make_perspective_matrix(
+    fovy: float, aspect: float, n: float, f: float
+) -> np.ndarray:
     """
     You're free to modify this function's signature; this is merely a suggested
     way to factor out a common subtask.
     """
-    pass
+    theta = np.deg2rad(fovy)
+    t = abs(n) * np.tan(theta / 2.0)
+    r = t * aspect
+
+    return np.array(
+        [
+            [-n / r, 0.0, 0.0, 0.0],
+            [0.0, -n / t, 0.0, 0.0],
+            [0.0, 0.0, (n + f) / (n - f), 2 * n * f / (n - f)],
+            [0.0, 0.0, -1.0, 0.0],
+        ]
+    )
 
 
 def calc_coverage(face_in_image_space, test_pixel_x, test_pixel_y):
@@ -119,6 +165,50 @@ def update_zbuffer(zbuffer: np.ndarray, YOUR_OTHER_ARGUMENTS_ETC):
     pass
 
 
+def barycentric(P: np.ndarray, tri: np.ndarray, eps: float = 1e-20) -> np.ndarray:
+    assert isinstance(P, np.ndarray)
+    assert isinstance(tri, np.ndarray)
+
+    A, B, C = tri
+
+    def edge(U, V, X):
+        return (V[0] - U[0]) * (X[..., 1] - U[1]) - (V[1] - U[1]) * (X[..., 0] - U[0])
+
+    area = edge(A, B, C)
+    if abs(area) < eps:  # degenerate triangle
+        return np.array([0.0, 0.0, 0.0])
+
+    return np.array([edge(B, C, P) / area, edge(C, A, P) / area, edge(A, B, P) / area])
+
+
+def in_triangle(P: np.ndarray, tri: np.ndarray, eps=1e-12):
+    alpha, beta, gamma = barycentric(P, tri, eps)
+    return ((alpha >= -eps) & (beta >= -eps) & (gamma >= -eps)) | (
+        (alpha <= eps) & (beta <= eps) & (gamma <= eps)
+    )
+
+
+def floorclip(val: float, min: int, max: int):
+    """
+    Floors the value and then clips it
+    """
+    return int(np.clip(np.floor(val), min, max))
+
+
+def ceilclip(val: float, min: int, max: int):
+    """
+    Ceils the value and then clips it
+    """
+    return int(np.clip(np.ceil(val), min, max))
+
+
+def roundclip(val: float, min: int, max: int):
+    """
+    Rounds the value and then clips it
+    """
+    return int(np.clip(np.round(val), min, max))
+
+
 """
 The functions below are the ones actually run for grading. Do not change the
 signatures of these functions. The autograder will run them and expect the
@@ -133,37 +223,286 @@ def render_viewport(obj: TriangleMesh, im_w: int, im_h: int) -> np.ndarray:
     TIP: Pad the vertex pixel out in order to visualize properly like in the
     handout pdf (but turn that off when you submit your code)
     """
-    return save_image("p1.png", YOUR_IMAGE_ARRAY_HERE)
+    assert obj.face_colors is not None
+
+    img = np.zeros((im_h, im_w, 3))
+
+    M_vp = make_viewport_matrix(im_h, im_w)
+
+    for l, F_l in enumerate(obj.faces):
+        color = obj.face_colors[l]
+
+        for k in range(3):
+            p = obj.vertices[F_l[k]]
+            p_H = np.array([*p, 1.0])
+            s_H = M_vp @ p_H
+            x_scr, y_scr, *_ = s_H
+
+            i = int(y_scr)
+            j = int(x_scr)
+
+            if 0 <= i < im_h and 0 <= j < im_w:
+                img[i, j, :] = color
+
+                # pad = 3
+                # i0, i1 = max(0, i - pad), min(im_h, i + pad + 1)
+                # j0, j1 = max(0, j - pad), min(im_w, j + pad + 1)
+                # img[i0:i1, j0:j1, :] = color
+
+    return save_image("p1.png", img)
 
 
 # P2
 def render_ortho(obj: TriangleMesh, im_w: int, im_h: int) -> np.ndarray:
     """Render the orthographic projection of the cube"""
-    return save_image("p2.png", YOUR_IMAGE_ARRAY_HERE)
+    assert obj.face_colors is not None
+
+    img = np.zeros((im_h, im_w, 3))
+
+    M_ortho = make_orthographic_matrix()
+    M_vp = make_viewport_matrix(im_h, im_w)
+
+    for l, F_l in enumerate(obj.faces):
+        color = obj.face_colors[l]
+
+        # transform vertices into screen space
+        pts = []
+        for k in range(3):
+            p = obj.vertices[F_l[k]]
+            p_H = np.array([*p, 1.0])
+            p_can = M_ortho @ p_H
+            p_scr = M_vp @ p_can
+            pts.append(p_scr[:2])
+
+        pts = np.array(pts)
+
+        xmin = floorclip(np.min(pts[:, 0]), 0, im_w - 1)
+        xmax = ceilclip(np.max(pts[:, 0]), 0, im_w - 1)
+        ymin = floorclip(np.min(pts[:, 1]), 0, im_h - 1)
+        ymax = ceilclip(np.max(pts[:, 1]), 0, im_h - 1)
+
+        for i in range(ymin, ymax + 1):
+            for j in range(xmin, xmax + 1):
+                if in_triangle(np.array([j + 0.5, i + 0.5]), pts):
+                    img[i, j, :] = color
+
+    return save_image("p2.png", img)
 
 
 # P3
 def render_camera(obj: TriangleMesh, im_w: int, im_h: int) -> np.ndarray:
     """Render the orthographic projection of the cube with the specific camera settings"""
-    return save_image("p3.png", YOUR_IMAGE_ARRAY_HERE)
+    assert obj.face_colors is not None
+
+    img = np.zeros((im_h, im_w, 3))
+
+    M_cam = make_camera_matrix(
+        eye=np.array([0.2, 0.2, 1.0]),
+        lookat=np.array([0.0, 0.0, 0.0]),
+        up=np.array([0.0, 1.0, 0.0]),
+    )
+    M_ortho = make_orthographic_matrix()
+    M_vp = make_viewport_matrix(im_h, im_w)
+
+    for l, F_l in enumerate(obj.faces):
+        color = obj.face_colors[l]
+
+        # transform vertices into screen space
+        pts = []
+        for k in range(3):
+            p = obj.vertices[F_l[k]]
+            p_H = np.array([*p, 1.0])
+            p_cam = M_cam @ p_H
+            p_can = M_ortho @ p_cam
+            p_scr = M_vp @ p_can
+            pts.append(p_scr[:2])
+
+        pts = np.array(pts)
+
+        xmin = floorclip(np.min(pts[:, 0]), 0, im_w - 1)
+        xmax = ceilclip(np.max(pts[:, 0]), 0, im_w - 1)
+        ymin = floorclip(np.min(pts[:, 1]), 0, im_h - 1)
+        ymax = ceilclip(np.max(pts[:, 1]), 0, im_h - 1)
+
+        for i in range(ymin, ymax + 1):
+            for j in range(xmin, xmax + 1):
+                if in_triangle(np.array([j + 0.5, i + 0.5]), pts):
+                    img[i, j, :] = color
+
+    return save_image("p3.png", img)
 
 
 # P4
 def render_perspective(obj: TriangleMesh, im_w: int, im_h: int) -> np.ndarray:
     """Render the perspective projection with perspective divide"""
-    return save_image("p4.png", YOUR_IMAGE_ARRAY_HERE)
+    assert obj.face_colors is not None
+
+    img = np.zeros((im_h, im_w, 3))
+
+    M_cam = make_camera_matrix(
+        eye=np.array([1.0, 1.0, 1.0]),
+        lookat=np.array([0.0, 0.0, 0.0]),
+        up=np.array([0.0, 1.0, 0.0]),
+    )
+    M_per = make_perspective_matrix(65.0, 4 / 3, -1.0, -100.0)
+    M_vp = make_viewport_matrix(im_h, im_w)
+
+    for l, F_l in enumerate(obj.faces):
+        color = obj.face_colors[l]
+
+        # transform vertices into screen space
+        pts = []
+        for k in range(3):
+            p = obj.vertices[F_l[k]]
+            p_H = np.array([*p, 1.0])
+            p_cam = M_cam @ p_H
+            p_clip = M_per @ p_cam
+
+            # perspective divide
+            p_ndc = p_clip[:3] / p_clip[3]
+            p_ndc_H = np.array([*p_ndc, 1.0])
+
+            p_scr = M_vp @ p_ndc_H
+            pts.append(p_scr[:2])
+
+        pts = np.array(pts)
+
+        xmin = floorclip(np.min(pts[:, 0]), 0, im_w - 1)
+        xmax = ceilclip(np.max(pts[:, 0]), 0, im_w - 1)
+        ymin = floorclip(np.min(pts[:, 1]), 0, im_h - 1)
+        ymax = ceilclip(np.max(pts[:, 1]), 0, im_h - 1)
+
+        for i in range(ymin, ymax + 1):
+            for j in range(xmin, xmax + 1):
+                if in_triangle(np.array([j + 0.5, i + 0.5]), pts):
+                    img[i, j, :] = color
+
+    return save_image("p4.png", img)
 
 
 # P5
 def render_zbuffer_with_color(obj: TriangleMesh, im_w: int, im_h: int) -> np.ndarray:
     """Render the input with z-buffering and color interpolation enabled"""
-    return save_image("p5.png", YOUR_IMAGE_ARRAY_HERE)
+    assert obj.vertex_colors is not None
+
+    img = np.zeros((im_h, im_w, 3))
+    zbuf = np.full((im_h, im_w), -np.inf)
+
+    M_cam = make_camera_matrix(
+        eye=np.array([1.0, 1.0, 1.0]),
+        lookat=np.array([0.0, 0.0, 0.0]),
+        up=np.array([0.0, 1.0, 0.0]),
+    )
+    M_per = make_perspective_matrix(65.0, 4 / 3, -1.0, -100.0)
+    M_vp = make_viewport_matrix(im_h, im_w)
+
+    for l, F_l in enumerate(obj.faces):
+        pts = []
+        zs = []
+        cols = []
+
+        for m in F_l:
+            p = obj.vertices[m]
+            c = obj.vertex_colors[m]
+
+            p_H = np.array([*p, 1.0])
+            p_cam = M_cam @ p_H
+            p_clip = M_per @ p_cam
+
+            # perspective divide
+            p_ndc = p_clip[:3] / p_clip[3]
+            p_ndc_H = np.array([*p_ndc, 1.0])
+
+            zs.append(p_ndc[2])
+            cols.append(c)
+
+            p_scr = M_vp @ p_ndc_H
+            pts.append(p_scr[:2])
+
+        pts = np.array(pts)
+        zs = np.array(zs)
+        cols = np.array(cols)
+
+        xmin = floorclip(np.min(pts[:, 0]), 0, im_w - 1)
+        xmax = ceilclip(np.max(pts[:, 0]), 0, im_w - 1)
+        ymin = floorclip(np.min(pts[:, 1]), 0, im_h - 1)
+        ymax = ceilclip(np.max(pts[:, 1]), 0, im_h - 1)
+
+        for i in range(ymin, ymax + 1):
+            for j in range(xmin, xmax + 1):
+                P = np.array([j + 0.5, i + 0.5])
+                if in_triangle(P, pts):
+                    P_bary = barycentric(P, pts)
+                    z = P_bary.dot(zs)
+                    if z > zbuf[i, j]:
+                        zbuf[i, j] = z
+                        img[i, j, :] = P_bary.dot(cols)
+
+    return save_image("p5.png", img)
 
 
 # P6
-def render_big_scene(objlist: Sequence[TriangleMesh], im_w: int, im_h: int) -> np.ndarray:
+def render_big_scene(
+    objlist: Sequence[TriangleMesh], im_w: int, im_h: int
+) -> np.ndarray:
     """Render a big scene with multiple shapes"""
-    return save_image("p6.png", YOUR_IMAGE_ARRAY_HERE)
+    img = np.zeros((im_h, im_w, 3))
+    zbuf = np.full((im_h, im_w), -np.inf)
+
+    M_cam = make_camera_matrix(
+        eye=np.array([-0.5, 1.0, 1.0]),
+        lookat=np.array([0.0, 0.0, 0.0]),
+        up=np.array([0.0, 1.0, 0.0]),
+    )
+    M_per = make_perspective_matrix(65.0, 4 / 3, -1.0, -100.0)
+    M_vp = make_viewport_matrix(im_h, im_w)
+
+    for obj in objlist:
+        assert obj.vertex_colors is not None
+
+        for l, F_l in enumerate(obj.faces):
+            pts = []
+            zs = []
+            cols = []
+
+            for m in F_l:
+                p = obj.vertices[m]
+                c = obj.vertex_colors[m]
+
+                p_H = np.array([*p, 1.0])
+                p_cam = M_cam @ p_H
+                p_clip = M_per @ p_cam
+
+                # perspective divide
+                p_ndc = p_clip[:3] / p_clip[3]
+                p_ndc_H = np.array([*p_ndc, 1.0])
+
+                zs.append(p_ndc[2])
+                cols.append(c)
+
+                p_scr = M_vp @ p_ndc_H
+                pts.append(p_scr[:2])
+
+            pts = np.array(pts)
+            zs = np.array(zs)
+            cols = np.array(cols)
+
+            xmin = floorclip(np.min(pts[:, 0]), 0, im_w - 1)
+            xmax = ceilclip(np.max(pts[:, 0]), 0, im_w - 1)
+            ymin = floorclip(np.min(pts[:, 1]), 0, im_h - 1)
+            ymax = ceilclip(np.max(pts[:, 1]), 0, im_h - 1)
+
+            for i in range(ymin, ymax + 1):
+                for j in range(xmin, xmax + 1):
+                    P = np.array([j + 0.5, i + 0.5])
+                    if in_triangle(P, pts):
+                        P_bary = barycentric(P, pts)
+                        z = P_bary.dot(zs)
+                        if z > zbuf[i, j]:
+                            zbuf[i, j] = z
+                            img[i, j, :] = P_bary.dot(cols)
+
+    return save_image("p6.png", img)
 
 
 # P7
@@ -181,11 +520,25 @@ def my_cube_uvs(cube: TriangleMesh) -> np.ndarray:
     """
     # You may find it helpful to start with this array and fill it out with correct values.
     uvs = np.zeros((len(cube.faces), 3, 2))
+
+    for f in range(0, len(cube.faces), 2):
+        uvs[f + 0] = np.array([
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+        ])
+
+        uvs[f + 1] = np.array([
+            [1.0, 1.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+        ])
+
     return uvs
 
 
 def texture_map(
-    obj: TriangleMesh, uvs: np.ndarray, img: np.ndarray, im_w: int, im_h: int
+    obj: TriangleMesh, uvs: np.ndarray, tex: np.ndarray, im_w: int, im_h: int
 ) -> np.ndarray:
     """
     Render a cube with the texture img mapped onto its faces according to uvs.
@@ -193,7 +546,82 @@ def texture_map(
     each of the 3 corners of each face
     `img` has shape (height, width, 3)
     """
-    return save_image("p7.png", YOUR_IMAGE_ARRAY_HERE)
+    tex_h, tex_w = tex.shape[:2]
+    img = np.zeros((im_h, im_w, 3))
+    zbuf = np.full((im_h, im_w), -np.inf)
+
+    M_cam = make_camera_matrix(
+        eye=np.array([1.0, 1.0, 1.0]),
+        lookat=np.array([0.0, 0.0, 0.0]),
+        up=np.array([0.0, 1.0, 0.0]),
+    )
+    M_per = make_perspective_matrix(65.0, 4 / 3, -1.0, -100.0)
+    M_vp = make_viewport_matrix(im_h, im_w)
+
+    for l, F_l in enumerate(obj.faces):
+        pts = []
+        zs = []
+        u_pw = []
+        v_pw = []
+        q = []
+
+        for k in range(3):
+            p = obj.vertices[F_l[k]]
+            u, v = uvs[l, k]
+
+            p_H = np.array([*p, 1.0])
+            p_cam = M_cam @ p_H
+            p_clip = M_per @ p_cam
+
+            w = p_clip[3]
+            u_pw.append(u / w)
+            v_pw.append(v / w)
+            q.append(1.0 / w)
+
+            # perspective divide
+            p_ndc = p_clip[:3] / w
+            p_ndc_H = np.array([*p_ndc, 1.0])
+
+            zs.append(p_ndc[2])
+
+            p_scr = M_vp @ p_ndc_H
+            pts.append(p_scr[:2])
+
+        pts = np.array(pts)
+        zs = np.array(zs)
+        u_pw = np.array(u_pw)
+        v_pw = np.array(v_pw)
+        q = np.array(q)
+
+        xmin = floorclip(np.min(pts[:, 0]), 0, im_w - 1)
+        xmax = ceilclip(np.max(pts[:, 0]), 0, im_w - 1)
+        ymin = floorclip(np.min(pts[:, 1]), 0, im_h - 1)
+        ymax = ceilclip(np.max(pts[:, 1]), 0, im_h - 1)
+
+        for i in range(ymin, ymax + 1):
+            for j in range(xmin, xmax + 1):
+                P = np.array([j + 0.5, i + 0.5])
+                if not in_triangle(P, pts):
+                    continue
+
+                P_bary = barycentric(P, pts)
+                z = P_bary.dot(zs)
+
+                if z <= zbuf[i, j]:
+                    continue
+
+                zbuf[i, j] = z
+
+                q_interp = P_bary.dot(q)
+                u = P_bary.dot(u_pw) / q_interp
+                v = P_bary.dot(v_pw) / q_interp
+
+                t_i = roundclip((1 - v) * tex_h - 0.5, 0, tex_h - 1)
+                t_j = roundclip(u * tex_w - 0.5, 0, tex_w - 1)
+
+                img[i, j] = tex[t_i, t_j]
+
+    return save_image("p7.png", img)
 
 
 ####### setup stuff
@@ -395,4 +823,4 @@ if __name__ == "__main__":
     # render_big_scene(objlist, im_w, im_h)
     img = read_image("flag.png")
     uvs = my_cube_uvs(cube)
-    # texture_map(cube, uvs, img, im_w, im_h)
+    texture_map(cube, uvs, img, im_w, im_h)
