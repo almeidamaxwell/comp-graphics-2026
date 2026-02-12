@@ -162,12 +162,18 @@ class Halfedge(Primitive):
     def prev(self) -> "Halfedge":
         # TODO: P2 -- complete this function
         """Return previous halfedge"""
-        raise NotImplementedError("TODO (P2)")
+        # walk the half edge cycle until we are one away from ourselves
+        cur = self
+        while cur.next != self:
+            cur = cur.next
+
+        return cur
 
     def tip_vertex(self) -> "Vertex":
         # TODO: P2 -- complete this function
         """Return vertex on the tip of the halfedge"""
-        raise NotImplementedError("TODO (P2)")
+        # tip vertex is just the next half edge's root vertex
+        return self.next.vertex
 
     def serialize(self):
         return (
@@ -193,7 +199,7 @@ class Edge(Primitive):
         return the two incident vertices of the edge
         note that the incident vertices are ambiguous to ordering
         """
-        raise NotImplementedError("TODO (P2)")
+        return (self.halfedge.vertex, self.halfedge.twin.vertex)
 
 
 class Face(Primitive):
@@ -206,22 +212,30 @@ class Face(Primitive):
     def adjacentHalfedges(self) -> Iterable[Halfedge]:
         # TODO: P2 -- complete this function
         """Return an iterable of adjacent halfedges"""
-        raise NotImplementedError("TODO (P2)")
+        half_edges = []
+        he = self.halfedge
+        while True:
+            half_edges.append(he)
+            he = he.next
+            if he == self.halfedge:
+                break
+
+        return half_edges
 
     def adjacentVertices(self) -> Iterable["Vertex"]:
         # TODO: P2 -- complete this function
         """Return an iterable of adjacent vertices"""
-        raise NotImplementedError("TODO (P2)")
+        return map(lambda he: he.vertex, self.adjacentHalfedges())
 
     def adjacentEdges(self) -> Iterable[Edge]:
         # TODO: P2 -- complete this function
         """Return an iterable of adjacent edges"""
-        raise NotImplementedError("TODO (P2)")
+        return map(lambda he: he.edge, self.adjacentHalfedges())
 
     def adjacentFaces(self) -> Iterable["Face"]:
         # TODO: P2 -- complete this function
         """Return an iterable of adjacent faces"""
-        raise NotImplementedError("TODO (P2)")
+        return map(lambda he: he.twin.face, self.adjacentHalfedges())
 
 
 class Vertex(Primitive):
@@ -234,7 +248,8 @@ class Vertex(Primitive):
     def degree(self) -> int:
         # TODO: P2 -- complete this function
         """Return vertex degree: # of incident edges"""
-        raise NotImplementedError("TODO (P2)")
+        return len(self.adjacentEdges())
+
 
     def isIsolated(self) -> bool:
         try:
@@ -246,19 +261,29 @@ class Vertex(Primitive):
     def adjacentHalfedges(self) -> Iterable[Halfedge]:
         # TODO: P2 -- complete this function
         """Return an iterable of adjacent halfedges"""
-        raise NotImplementedError("TODO (P2)")
+        half_edges = []
+        he = self.halfedge
+
+        while True:
+            half_edges.append(he)
+            he = he.twin.next
+
+            if he == self.halfedge:
+                break
+
+        return half_edges
 
     def adjacentVertices(self) -> Iterable["Vertex"]:
         # TODO: P2 -- complete this function
         """Return an iterable of adjacent vertices"""
-        raise NotImplementedError("TODO (P2)")
+        return map(lambda he: he.tip_vertex(), self.adjacentHalfedges())
 
     def adjacentEdges(self) -> Iterable[Edge]:
         # TODO: P2 -- complete this function
         """Return an iterable of adjacent edges"""
-        raise NotImplementedError("TODO (P2)")
+        return map(lambda he: he.edge, self.adjacentHalfedges())
 
     def adjacentFaces(self) -> Iterable[Face]:
         # TODO: P2 -- complete this function
         """Return an iterable of adjacent faces"""
-        raise NotImplementedError("TODO (P2)")
+        return map(lambda he: he.face, self.adjacentHalfedges())

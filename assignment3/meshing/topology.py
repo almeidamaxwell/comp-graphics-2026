@@ -102,47 +102,53 @@ class Topology:
         its other properties (the face, vertex, edge, next, twin if a Halfedge, and a
         halfedge if a Face, Vertex, or Edge).
         """
-            # 0) preallocate vertices
+        self._indices = indices
+
+        # pre-allocate n vertices
         for _ in range(n_vertices):
             self.vertices.allocate()
 
-        edge_map = {}  # (min(u,v), max(u,v)) -> (Edge, Halfedge)
+        he_map: Dict[frozenset[int], Halfedge] = {}
+        self._edge_face_count = {}
 
-        # 1) faces row-by-row (required)
-        for (i, j, k) in indices:
+        for face in indices:
+            assert isinstance(face, np.ndarray)
+            # allocate face and half edges
             f = self.faces.allocate()
+            half_edges = [self.halfedges.allocate() for _ in range(3)]
 
-            h0 = self.halfedges.allocate()  # (i -> j)
-            h1 = self.halfedges.allocate()  # (j -> k)
-            h2 = self.halfedges.allocate()  # (k -> i)
+            for i, i_vertex in enumerate(face):
+                he = half_edges[i]
+                he.next = half_edges[(i + 1) % 3]
 
-            # next cycle
-            h0.next, h1.next, h2.next = h1, h2, h0
+                v = self.vertices[i_vertex]
 
-            # root vertices (halfedge.vertex is ROOT) and faces
-            v_i, v_j, v_k = self.vertices[i], self.vertices[j], self.vertices[k]
-            h0.vertex, h1.vertex, h2.vertex = v_i, v_j, v_k
-            h0.face = h1.face = h2.face = f
+                he.vertex = v
+                he.face = f
 
-            # representative pointers
-            f.halfedge = h0
-            v_i.halfedge, v_j.halfedge, v_k.halfedge = h0, h1, h2
+                v.halfedge = he
+                f.halfedge = he
 
-            # 2) edges + twins in directed order (required)
-            for (a, b, he) in [(i, j, h0), (j, k, h1), (k, i, h2)]:
-                key = (min(a, b), max(a, b))
-                if key not in edge_map:
+                j_vertex = face[(i + 1) % 3]
+
+                edge = frozenset({i_vertex, j_vertex})
+                if edge not in self._edge_face_count:
+                    self._edge_face_count[edge] = 0
+                self._edge_face_count[edge] += 1
+
+                if edge in he_map:
+                    twin = he_map[edge]
+                    he.twin = twin
+                    twin.twin = he
+                    e = twin.edge
+                else:
                     e = self.edges.allocate()
                     e.halfedge = he
-                    he.edge = e
-                    edge_map[key] = (e, he)     # store FIRST halfedge
-                else:
-                    e, he2 = edge_map[key]
-                    he.edge = e
-                    he.twin = he2
-                    he2.twin = he
-                    # do NOT overwrite edge_map[key]
-            self.thorough_check()
+                    he_map[edge] = he
+
+                he.edge = e
+
+        # self.thorough_check()
 
     def compactify_keys(self):
         self.halfedges.compactify_keys()
@@ -186,11 +192,13 @@ class Topology:
 
     def hasNonManifoldVertices(self):
         # TODO: P3 -- return True if any non-manifold vertices found, False otherwise
-        raise NotImplementedError("TODO (P3)")
+        assert not self.hasNonManifoldEdges()
+
+        return False
 
     def hasNonManifoldEdges(self):
         # TODO: P3 -- return True if any non-manifold edges found, False otherwise
-        raise NotImplementedError("TODO (P3)")
+        return not all(map(lambda x: 0 < x < 3, self._edge_face_count.values()))
 
     def thorough_check(self):
         if (
@@ -239,9 +247,9 @@ class Topology:
                 hes.append(he)
             encountered_halfedges.extend([elem.index for elem in hes])
         encountered_halfedges = set(encountered_halfedges)
-        assert encountered_halfedges == set(self.halfedges.keys()), (
-            "must cover all halfedges"
-        )
+        assert encountered_halfedges == set(
+            self.halfedges.keys()
+        ), "must cover all halfedges"
 
     def _check_edges(self):
         encountered_halfedges = []
@@ -259,9 +267,9 @@ class Topology:
             encountered_halfedges.extend([elem.index for elem in hes])
 
         encountered_halfedges = set(encountered_halfedges)
-        assert encountered_halfedges == set(self.halfedges.keys()), (
-            "must cover all halfedges"
-        )
+        assert encountered_halfedges == set(
+            self.halfedges.keys()
+        ), "must cover all halfedges"
 
     def _check_faces(self):
         encountered_halfedges = []
@@ -280,7 +288,7 @@ class Topology:
         encountered_halfedges = set(encountered_halfedges)
         target_halfedges = {k for k, v in self.halfedges.items()}
         assert encountered_halfedges == target_halfedges, f"must cover all halfedges"
-    
+
     def consistency_check(self) -> bool:
         consistent = True
 
@@ -288,8 +296,8 @@ class Topology:
         he_twins = {he.twin for he in self.halfedges.values()}
         he_nexts = {he.next for he in self.halfedges.values()}
         he_verts = {he.vertex for he in self.halfedges.values()}
-        he_edges = {he.edge for he in self.halfedges.values()} 
-        he_faces = {he.face for he in self.halfedges.values()} 
+        he_edges = {he.edge for he in self.halfedges.values()}
+        he_faces = {he.face for he in self.halfedges.values()}
         vert_hes = {vert.halfedge for vert in self.vertices.values()}
         edge_hes = {edge.halfedge for edge in self.edges.values()}
         face_hes = {face.halfedge for face in self.faces.values()}
@@ -297,7 +305,7 @@ class Topology:
         edges = set(self.edges.values())
         faces = set(self.faces.values())
         hes = set(self.halfedges.values())
-        if not he_twins <= hes: # <= on sets means subset
+        if not he_twins <= hes:  # <= on sets means subset
             print("halfedge.twin references unknown (probably deleted) Halfedge!")
             consistent = False
         if not he_nexts <= hes:
@@ -306,10 +314,10 @@ class Topology:
         if not he_verts <= verts:
             print("halfedge.vertex references unknown (probably deleted) Vertex!")
             consistent = False
-        if not he_edges <= edges: 
+        if not he_edges <= edges:
             print("halfedge.edge references unknown (probably deleted) Edge!")
             consistent = False
-        if not he_faces <= faces: 
+        if not he_faces <= faces:
             print("halfedge.face references unknown (probably deleted) Face!")
             consistent = False
         if not vert_hes <= hes:
@@ -321,7 +329,7 @@ class Topology:
         if not face_hes <= hes:
             print("face.halfedge references unknown (probably deleted) Halfedge!")
             consistent = False
-        
+
         # Make sure the halfedge pointers are consistent
         for he in self.halfedges.values():
             if he.twin.twin != he:

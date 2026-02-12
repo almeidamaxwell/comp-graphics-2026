@@ -7,10 +7,10 @@ if __name__ == "__main__":
     def load_bunny_and_check():
         # Initializes a PolygonSoup object from an obj file, which reads in the obj
         # and fills out attributes vertices and indices (triangle faces)
-        soup = PolygonSoup.from_obj("bunny.obj")
+        soup = PolygonSoup.from_obj("nonvmanif.obj")
         # Initialize your mesh object
         mesh = Mesh(soup.vertices, soup.indices)
-        mesh.view_basic()
+        # mesh.view_basic()
 
         # This is the checker function that is called at the end of topology.build()
         # Currently, this will throw.
@@ -19,7 +19,7 @@ if __name__ == "__main__":
         # Vertex.adjacentHalfedges, Face.adjacentHalfedges functions (P2, primitive.py)
         # Even before you get to P2, you should make sure thorough_check runs up to
         # and including _check_edges successfully.
-        mesh.topology.thorough_check()
+        # mesh.topology.thorough_check()
         return mesh
 
     # Run these example functions once you've finished their prerequisites as commented
@@ -142,7 +142,9 @@ if __name__ == "__main__":
         mesh.export_obj("ec.obj")
 
     ## run one of these functions at a time per script run
-    load_bunny_and_check()
+    mesh = load_bunny_and_check()
+    print("non-manifold vertices?", mesh.topology.hasNonManifoldVertices())
+    print("non-manifold edges?", mesh.topology.hasNonManifoldEdges())
     # example_halfedge0()
     # example_onering()
     # example_export()
