@@ -4,3 +4,6 @@ output
 tests
 *.png
 *.npy.gz
+*.obj
+*.pdf
+*.ini

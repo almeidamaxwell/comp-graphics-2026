@@ -89,7 +89,7 @@ if __name__ == "__main__":
         You should have finished P1, P2, P3, P4 and begun working on P5 for this.
         """
         mesh = load_bunny_and_check()
-        mesh.smoothMesh(n=5)
+        mesh.smoothMesh(n=2)
         mesh.view_basic()
         mesh.export_obj("p5.obj")
 
@@ -144,7 +144,7 @@ if __name__ == "__main__":
     ## run one of these functions at a time per script run
     mesh = load_bunny_and_check()
     print("non-manifold vertices?", mesh.topology.hasNonManifoldVertices())
-    print("non-manifold edges?", mesh.topology.hasNonManifoldEdges())
+    # print("non-manifold edges?", mesh.topology.hasNonManifoldEdges())
     # example_halfedge0()
     # example_onering()
     # example_export()
@@ -153,3 +153,19 @@ if __name__ == "__main__":
     # example_collapse_simple_cube()
     # example_collapses()
     # example_collapses_with_link()
+
+
+    # # custom obj
+    # soup = PolygonSoup.from_obj("p7.obj")
+    # mesh = Mesh(soup.vertices, soup.indices)
+    # mesh.view_basic()
+
+    # for _ in range(10):
+    #     chosen_edge = np.random.choice(list(mesh.topology.edges.keys()))
+    #     mesh.collapse([chosen_edge])
+
+    # mesh.smoothMesh(5)
+    # mesh.view_basic()
+
+    # mesh.export_obj("p7_custom.obj")
+

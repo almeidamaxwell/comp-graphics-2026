@@ -248,7 +248,7 @@ class Vertex(Primitive):
     def degree(self) -> int:
         # TODO: P2 -- complete this function
         """Return vertex degree: # of incident edges"""
-        return len(self.adjacentEdges())
+        return len(list(self.adjacentEdges()))
 
 
     def isIsolated(self) -> bool:

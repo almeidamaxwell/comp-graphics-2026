@@ -109,7 +109,6 @@ class Topology:
             self.vertices.allocate()
 
         he_map: Dict[frozenset[int], Halfedge] = {}
-        self._edge_face_count = {}
 
         for face in indices:
             assert isinstance(face, np.ndarray)
@@ -130,12 +129,7 @@ class Topology:
                 f.halfedge = he
 
                 j_vertex = face[(i + 1) % 3]
-
                 edge = frozenset({i_vertex, j_vertex})
-                if edge not in self._edge_face_count:
-                    self._edge_face_count[edge] = 0
-                self._edge_face_count[edge] += 1
-
                 if edge in he_map:
                     twin = he_map[edge]
                     he.twin = twin
@@ -192,13 +186,69 @@ class Topology:
 
     def hasNonManifoldVertices(self):
         # TODO: P3 -- return True if any non-manifold vertices found, False otherwise
-        assert not self.hasNonManifoldEdges()
+        incident: dict[int, list[tuple[int, int]]] = {}
+
+        for i, j, k in self._indices:
+            if i not in incident:
+                incident[i] = []
+
+            if j not in incident:
+                incident[j] = []
+
+            if k not in incident:
+                incident[k] = []
+
+            incident[i].append((j, k))
+            incident[j].append((k, i))
+            incident[k].append((i, j))
+
+        for _, vertex_pairs in incident.items():
+            if len(vertex_pairs) <= 1:
+                continue
+
+            # built neighbor graph from vertex
+            neighbors_adjacent: dict[int, set[int]] = {}
+            neighbors = set()
+
+            for a, b in vertex_pairs:
+                if a not in neighbors_adjacent:
+                    neighbors_adjacent[a] = set()
+
+                if b not in neighbors_adjacent:
+                    neighbors_adjacent[b] = set()
+
+                neighbors_adjacent[a].add(b)
+                neighbors_adjacent[b].add(a)
+                neighbors.add(a)
+                neighbors.add(b)
+
+            stack = [neighbors.pop()]
+            seen = set(stack)
+
+            while stack:
+                x = stack.pop()
+                for y in neighbors_adjacent[x]:
+                    if y not in seen:
+                      seen.add(y)
+                      stack.append(y)
+
+            if seen != neighbors:
+                return True
 
         return False
 
     def hasNonManifoldEdges(self):
         # TODO: P3 -- return True if any non-manifold edges found, False otherwise
-        return not all(map(lambda x: 0 < x < 3, self._edge_face_count.values()))
+        edge_count: dict[frozenset[int], int] = {}
+
+        for i, j, k in self._indices:
+            for edge in (frozenset((i, j)), frozenset((j, k)), frozenset((k, i))):
+                edge_count[edge]  = edge_count.get(edge, 0) + 1
+
+                if edge_count[edge] > 2:
+                    return True
+
+        return False
 
     def thorough_check(self):
         if (

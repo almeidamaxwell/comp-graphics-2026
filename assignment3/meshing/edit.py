@@ -33,7 +33,15 @@ class LaplacianSmoothing(MeshEdit):
 
     def apply(self):
         # TODO: P5 -- complete this function
-        raise NotImplementedError("TODO (P5)")
+        for _ in range(self.n_iter):
+            new_vertices = self.mesh.vertices.copy()
+
+            for vertex in self.mesh.topology.vertices.values():
+                # compute position as average of neighbors
+                neighbors = list(map(self.mesh.get_3d_pos, vertex.adjacentVertices()))
+                new_vertices[vertex.index] = np.mean(neighbors, axis=0)
+
+            self.mesh.vertices = new_vertices
 
 
 class EdgeCollapse(MeshEdit):
@@ -97,7 +105,75 @@ def prepare_collapse(mesh: Mesh, e_id: int) -> CollapsePrep:
     topology = mesh.topology
     e = topology.edges[e_id]
     # TODO write your code here, replace this raise, and return a `CollapsePrep`
-    raise NotImplementedError("TODO (P6)")
+
+    cd = e.halfedge
+    dc = cd.twin
+
+    db = cd.next
+    bd = db.twin
+
+    ca = dc.next
+    ac = ca.twin
+
+    ad = dc.prev()
+    da = ad.twin
+
+    bc = cd.prev()
+    cb = bc.twin
+
+    a = ad.vertex
+    b = bd.vertex
+    c = cd.vertex
+    d = dc.vertex
+
+    prep = CollapsePrep((c, d))
+
+    # delete half edges of the triangles
+    prep.del_hes += [cd, db, bc, dc, ca, ad]
+    # delete faces of the triangles
+    prep.del_faces.extend([cd.face, dc.face])
+    # delete edges that connect to d
+    prep.del_edges.extend([e, ad.edge, db.edge])
+    # delete vertex d
+    prep.del_verts.append(d)
+
+    # repair neighbors of d
+    he = bd.next
+    while True:
+        prep.repair_he_verts.append((he, c))
+        he = he.twin.next
+        if he == dc:
+            break  # we've completed the cycle
+
+    # rewire da and bd to have twins of ac and cb respectively
+    prep.repair_he_twins.append((da, ac))
+    prep.repair_he_twins.append((bd, cb))
+
+    # repair da and bd edges
+    prep.repair_he_edges.append((da, ac.edge))
+    prep.repair_he_edges.append((bd, cb.edge))
+
+    # check if we broke ac.edge.halfedge
+    if ac.edge.halfedge == ca:
+        prep.repair_edge_hes.append((ac.edge, ac))
+
+    # check if we broke cb.edge.halfedge
+    if cb.edge.halfedge == bc:
+        prep.repair_edge_hes.append((cb.edge, cb))
+
+    # check if we broke c.halfedge
+    if c.halfedge in (ca, cd):
+        prep.repair_vert_hes.append((c, da))
+
+    # check if we broke a.halfedge
+    if a.halfedge == ad:
+        prep.repair_vert_hes.append((a, ac))
+
+    # check if we broke b.halfedge
+    if b.halfedge == bc:
+        prep.repair_vert_hes.append((b, bd))
+
+    return prep
 
 
 # TODO: P6 -- complete this
@@ -118,7 +194,46 @@ def do_collapse(prep: CollapsePrep, mesh: Mesh):
     and similarly for other primitive types.
     """
     # TODO write your code here and replace this raise
-    raise NotImplementedError("TODO (P6)")
+    for he0, he1 in prep.repair_he_twins:
+        he0.twin = he1
+        he1.twin = he0
+
+    for he0, he1 in prep.repair_he_nexts:
+        he0.next = he1
+
+    for he, edge in prep.repair_he_edges:
+        he.edge = edge
+
+    for he, vertex in prep.repair_he_verts:
+        he.vertex = vertex
+
+    for he, face in prep.repair_he_faces:
+        he.face = face
+
+    for edge, he in prep.repair_edge_hes:
+        edge.halfedge = he
+
+    for vertex, he in prep.repair_vert_hes:
+        vertex.halfedge = he
+
+    for face, he in prep.repair_face_hes:
+        face.halfedge = he
+
+    v0, v1 = prep.merge_verts
+    m = np.mean(list(map(mesh.get_3d_pos, prep.merge_verts)), axis=0)
+    mesh.vertices[v0.index] = m
+
+    for he in prep.del_hes:
+        del mesh.topology.halfedges[he.index]
+
+    for edge in prep.del_edges:
+        del mesh.topology.edges[edge.index]
+
+    for vertex in prep.del_verts:
+        del mesh.topology.vertices[vertex.index]
+
+    for face in prep.del_faces:
+        del mesh.topology.faces[face.index]
 
 
 class EdgeCollapseWithLink(MeshEdit):
@@ -144,4 +259,13 @@ def link_condition(mesh: Mesh, e_id: int) -> bool:
     topology = mesh.topology
     e = topology.edges[e_id]
     # TODO write your code here and replace this raise and return
-    raise NotImplementedError("TODO (EC)")
+    cd = e.halfedge
+    dc = cd.twin
+
+    c = cd.vertex
+    d = dc.vertex
+
+    c_neighbors = {v.index for v in c.adjacentVertices()}
+    d_neighbors = {v.index for v in d.adjacentVertices()}
+
+    return len(c_neighbors.intersection(d_neighbors)) == 2
